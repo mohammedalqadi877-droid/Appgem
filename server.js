@@ -72,13 +72,108 @@ Object.keys(defaultSettings).forEach(key => {
     }
 });
 
-// الألعاب الافتراضية (Snake, Defender, 2048)
+// الألعاب الافتراضية (تم تحديث Snake لتدعم الموبايل واللمس)
 const defaultGames = [
     {
         name: "ثعبان البرق الكلاسيكي",
         thumb: "https://images.unsplash.com/photo-1628157582853-a796fa650a6a?w=400",
         file: "snake.html",
-        content: `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Snake</title><style>body{background:#111;color:#fff;text-align:center;font-family:sans-serif;margin:0;padding:20px}canvas{background:#000;display:block;margin:20px auto;border:4px solid #ef4444;max-width:100%}</style></head><body><h3>اسكور: <span id="score">0</span></h3><canvas id="gc" width="400" height="400"></canvas><script>window.onload=function(){canvas=document.getElementById("gc");ctx=canvas.getContext("2d");document.addEventListener("keydown",keyPush);setInterval(game,1000/15);if(window.parent&&window.parent.initWakeLock){window.parent.initWakeLock();}};px=py=10;gs=tc=20;ax=ay=15;xv=yv=0;trail=[];tail=5;score=0;function game(){px+=xv;py+=yv;if(px<0||px>tc-1||py<0||py>tc-1){xv=yv=0;px=py=10;tail=5;score=0;document.getElementById("score").innerText=score;}ctx.fillStyle="black";ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle="lime";for(var i=0;i<trail.length;i++){ctx.fillRect(trail[i].x*gs,trail[i].y*gs,gs-2,gs-2);if(trail[i].x==px&&trail[i].y==py){tail=5;score=0;document.getElementById("score").innerText=score;}}trail.push({x:px,y:py});while(trail.length>tail){trail.shift();}if(ax==px&&ay==py){tail++;score++;document.getElementById("score").innerText=score;ax=Math.floor(Math.random()*tc);ay=Math.floor(Math.random()*tc);}ctx.fillStyle="red";ctx.fillRect(ax*gs,ay*gs,gs-2,gs-2)}function keyPush(evt){switch(evt.keyCode){case 37:xv=-1;yv=0;break;case 38:xv=0;yv=-1;break;case 39:xv=1;yv=0;break;case 40:xv=0;yv=1;break;}}</script><body></html>`
+        content: `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snake Mobile</title>
+    <style>
+        body { background: #111; color: #fff; text-align: center; font-family: sans-serif; margin: 0; padding: 10px; touch-action: manipulation; }
+        canvas { background: #000; display: block; margin: 10px auto; border: 4px solid #ef4444; max-width: 100%; height: auto; }
+        h3 { margin: 5px 0; }
+        /* تصميم أزرار التحكم للموبايل */
+        .controls { display: grid; grid-template-columns: repeat(3, 60px); grid-template-rows: repeat(3, 60px); gap: 10px; justify-content: center; margin-top: 15px; }
+        .btn-ctrl { background: #374151; color: #fff; border: none; border-radius: 50%; font-size: 24px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; }
+        .btn-ctrl:active { background: #ef4444; }
+        .up { grid-column: 2; grid-row: 1; }
+        .left { grid-column: 1; grid-row: 2; }
+        .right { grid-column: 3; grid-row: 2; }
+        .down { grid-column: 2; grid-row: 3; }
+    </style>
+</head>
+<body>
+    <h3>اسكور: <span id="score">0</span></h3>
+    <canvas id="gc" width="400" height="400"></canvas>
+
+    <div class="controls">
+        <button class="btn-ctrl up" onclick="changeDirection('UP')">⬆️</button>
+        <button class="btn-ctrl left" onclick="changeDirection('LEFT')">⬅️</button>
+        <button class="btn-ctrl right" onclick="changeDirection('RIGHT')">➡️</button>
+        <button class="btn-ctrl down" onclick="changeDirection('DOWN')">⬇️</button>
+    </div>
+
+    <script>
+        window.onload = function() {
+            canvas = document.getElementById("gc");
+            ctx = canvas.getContext("2d");
+            document.addEventListener("keydown", keyPush);
+            setInterval(game, 1000 / 12); // سرعة متوازنة تناسب شاشات اللمس
+        };
+        
+        px = py = 10;
+        gs = tc = 20;
+        ax = ay = 15;
+        xv = yv = 0;
+        trail = [];
+        tail = 5;
+        score = 0;
+
+        function game() {
+            px += xv;
+            py += yv;
+            if (px < 0 || px > tc - 1 || py < 0 || py > tc - 1) {
+                xv = yv = 0; px = py = 10; tail = 5; score = 0;
+                document.getElementById("score").innerText = score;
+            }
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "lime";
+            for (var i = 0; i < trail.length; i++) {
+                ctx.fillRect(trail[i].x * gs, trail[i].y * gs, gs - 2, gs - 2);
+                if (trail[i].x == px && trail[i].y == py) {
+                    tail = 5; score = 0;
+                    document.getElementById("score").innerText = score;
+                }
+            }
+            trail.push({ x: px, y: py });
+            while (trail.length > tail) { trail.shift(); }
+            if (ax == px && ay == py) {
+                tail++; score++;
+                document.getElementById("score").innerText = score;
+                ax = Math.floor(Math.random() * tc);
+                ay = Math.floor(Math.random() * tc);
+            }
+            ctx.fillStyle = "red";
+            ctx.fillRect(ax * gs, ay * gs, gs - 2, gs - 2);
+        }
+
+        // التحكم الذكي باللمس
+        function changeDirection(dir) {
+            if (dir === 'LEFT' && xv !== 1) { xv = -1; yv = 0; }
+            if (dir === 'UP' && yv !== 1) { xv = 0; yv = -1; }
+            if (dir === 'RIGHT' && xv !== -1) { xv = 1; yv = 0; }
+            if (dir === 'DOWN' && yv !== -1) { xv = 0; yv = 1; }
+        }
+
+        // التحكم بالكيبورد للكمبيوتر
+        function keyPush(evt) {
+            switch (evt.keyCode) {
+                case 37: changeDirection('LEFT'); break;
+                case 38: changeDirection('UP'); break;
+                case 39: changeDirection('RIGHT'); break;
+                case 40: changeDirection('DOWN'); break;
+            }
+        }
+    </script>
+</body>
+</html>`
     },
     {
         name: "مدافع الحصن الرقمي",
@@ -90,7 +185,7 @@ const defaultGames = [
         name: "لعبة لغز 2048",
         thumb: "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=400",
         file: "2048.html",
-        content: `<!DOCTYPE html><html><head><meta charset="utf-8"><title>2048 Lite</title><style>body{background:#faf8ef;color:#776e65;font-family:sans-serif;text-align:center;padding:10px}.grid{width:240px;height:240px;background:#bbada0;margin:20px auto;border-radius:6px;padding:10px;display:grid;grid-template-columns:repeat(4,1fr);grid-gap:10px}.cell{background:rgba(238,228,218,0.35);border-radius:3px;font-size:24px;font-weight:700;line-height:50px;height:50px;color:#776e65;text-align:center}</style></head><body><h2>لعبة 2048 المصغرة</h2><div class="grid"><div class="cell">2</div><div class="cell">4</div><div class="cell">8</div><div class="cell"></div><div class="cell"></div><div class="cell">16</div><div class="cell"></div><div class="cell"></div><div class="cell">32</div><div class="cell">64</div><div class="cell">128</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell">256</div><div class="cell">1024</div></div><p>استخدم الأزرار واللمس في النسخ المتقدمة! حرك الأرقام للوصول إلى 2048.</p><script>if(window.parent&&window.parent.initWakeLock)window.parent.initWakeLock();</script></body></html>`
+        content: `<!DOCTYPE html><html><head><meta charset="utf-8"><title>2048 Lite</title><style>body{background:#faf8ef;color:#776e65;font-family:sans-serif;text-align:center;padding:10px}.grid{width:240px;height:240px;background:#bbada0;margin:20px auto;border-radius:6px;padding:10px;display:grid;grid-template-columns:repeat(4,1fr);grid-gap:10px}.cell{background:rgba(238,228,218,0.35);border-radius:3px;font-size:24px;font-weight:700;line-height:50px;height:50px;color:#776e65;text-align:center}</style></head><body><h2>لعبة 2048 المصغرة</h2><div class="grid"><div class="cell">2</div><div class="cell">4</div><div class="cell">8</div><div class="cell"></div><div class="cell"></div><div class="cell">16</div><div class="cell"></div><div class="cell"></div><div class="cell">32</div><div class="cell">64</div><div class="cell">128</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell">256</div><div class="cell">1024</div></div><p>استخدم اللمس للتنقل! حرك الأرقام للوصول إلى 2048.</p><script>if(window.parent&&window.parent.initWakeLock)window.parent.initWakeLock();</script></body></html>`
     }
 ];
 
