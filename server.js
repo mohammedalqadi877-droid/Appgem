@@ -9,14 +9,14 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 
-// التأكد من وجود مجلد البيانات الثابت /data ومجلد الألعاب
-const DATA_DIR = '/data';
+// 🌟 الحل المجاني: جعل مجلد البيانات داخل مسار المشروع الحالي لتجنب رفض الصلاحيات
+const DATA_DIR = path.join(__dirname, 'data');
 const GAMES_DIR = path.join(DATA_DIR, 'games');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(GAMES_DIR)) fs.mkdirSync(GAMES_DIR, { recursive: true });
 
-// إعداد قاعدة البيانات في المجلد الثابت
+// إعداد قاعدة البيانات في المجلد المحلي المتوافق مع الخطة المجانية
 const db = dbFactory(path.join(DATA_DIR, 'database.db'));
 
 app.use(express.json());
@@ -209,7 +209,7 @@ app.post('/api/admin/charge-user', (req, res) => {
     res.json({ success: true });
 });
 
-// تقديم ملفات الألعاب المرفوعة والمخزنة في /data/games
+// تقديم ملفات الألعاب المرفوعة والمخزنة محلياً
 app.get('/gamefile/:filename', (req, res) => {
     res.sendFile(path.join(GAMES_DIR, req.params.filename));
 });
@@ -219,7 +219,6 @@ app.get('/', (req, res) => {
     const games = db.prepare("SELECT * FROM games WHERE enabled = 1").all();
     const ideas = db.prepare("SELECT * FROM ideas").all();
     
-    // جلب المتغيرات الديناميكية من قاعدة البيانات مباشرة لتحديث الواجهة آنياً
     const siteTitleAr = getSetting('site_title_ar', 'متجر البرق');
     const siteTitleEn = getSetting('site_title_en', 'Lightning Games');
     const logoUrl = getSetting('logo_url', '');
@@ -257,7 +256,6 @@ app.get('/', (req, res) => {
             .game-actions { display: flex; gap: 10px; justify-content: center; }
             footer { background: var(--bg-2); text-align: center; padding: 15px; font-size: 14px; margin-top: auto; border-top: 1px solid rgba(255,255,255,0.05); }
             
-            /* المودال والـ Fullscreen Popups */
             .modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; justify-content:center; align-items:center; padding:15px; }
             .modal-content { background: var(--bg-2); padding: 25px; border-radius: 12px; max-width: 600px; width: 100%; max-height: 80vh; overflow-y: auto; border: 2px solid var(--btn); relative; }
             .close-btn { float: left; cursor: pointer; font-size: 24px; color: var(--btn); }
@@ -344,7 +342,6 @@ app.get('/', (req, res) => {
         <script>
             let userId = localStorage.getItem('game_user_id');
             if(!userId) {
-                // توليد معرف فريد عشوائي مكون من 9 أحرف وأرقام
                 const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
                 userId = '';
                 for (let i = 0; i < 9; i++) userId += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -396,10 +393,8 @@ app.get('/', (req, res) => {
                 }
             }
 
-            function closeModal() { document.getElementById('ideasModal').style.display = 'flex'; }
-            window.onclick = function(e) {
-                if (e.target == document.getElementById('ideasModal')) closeModal();
-            }
+            function openModal() { document.getElementById('ideasModal').style.display = 'flex'; }
+            function closeModal(e) { if(e.target.id === 'ideasModal') document.getElementById('ideasModal').style.display = 'none'; }
 
             function closeGameFrame() {
                 document.getElementById('game-frame-container').style.display = 'none';
@@ -407,13 +402,12 @@ app.get('/', (req, res) => {
                 if(wakeLock !== null) { wakeLock.release(); wakeLock = null; }
             }
 
-            // تفعيل الـ Wake Lock لمنع إطفاء الشاشة أثناء اللعب الممتد
             async function initWakeLock() {
                 try {
                     if ('wakeLock' in navigator) {
                         wakeLock = await navigator.wakeLock.request('screen');
                     }
-                } catch (err) { console.log("Wake Lock غير مدعوم أو تم رفضه"); }
+                } catch (err) { console.log("Wake Lock غير مدعوم"); }
             }
         </script>
     </body>
@@ -675,7 +669,6 @@ app.get('/admin', (req, res) => {
     `);
 });
 
-// تشغيل خادم الويب المتكامل
 app.listen(PORT, () => {
     console.log(`🚀 السيرفر يعمل بكفاءة كاملة على منفذ: ${PORT}`);
 });
