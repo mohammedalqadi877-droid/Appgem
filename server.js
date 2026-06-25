@@ -9,38 +9,46 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 
-// 🌟 الحل المجاني: جعل مجلد البيانات داخل مسار المشروع الحالي لتجنب رفض الصلاحيات
 const DATA_DIR = path.join(__dirname, 'data');
 const GAMES_DIR = path.join(DATA_DIR, 'games');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(GAMES_DIR)) fs.mkdirSync(GAMES_DIR, { recursive: true });
+if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// إعداد قاعدة البيانات في المجلد المحلي المتوافق مع الخطة المجانية
 const db = dbFactory(path.join(DATA_DIR, 'database.db'));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// إعداد رفع الملفات بواسطة Multer
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, GAMES_DIR);
-    },
+const gameStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, GAMES_DIR),
     filename: (req, file, cb) => {
         const ext = path.extname(file.originalname);
         cb(null, Date.now() + '-' + Math.round(Math.random() * 1E9) + ext);
     }
 });
-const upload = multer({ storage: storage });
+const uploadGame = multer({ storage: gameStorage });
 
-// --- 1. إنشاء الجداول وتجهيز الإعدادات والألعاب الافتراضية ---
+const fileStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+});
+const uploadFile = multer({ storage: fileStorage });
+
+// --- إنشاء وتحديث الجداول (إضافة حقل clicks للألعاب) ---
 db.exec(`
     CREATE TABLE IF NOT EXISTS users (id_9chars TEXT PRIMARY KEY, attempts INTEGER, last_reset TEXT);
-    CREATE TABLE IF NOT EXISTS games (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, thumbnail TEXT, filename TEXT, enabled INTEGER);
-    CREATE TABLE IF NOT EXISTS ideas (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, title TEXT, content TEXT);
+    CREATE TABLE IF NOT EXISTS games (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, thumbnail TEXT, filename TEXT, enabled INTEGER, clicks INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS ideas (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, title TEXT, content TEXT, file_url TEXT);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 `);
+
+// التأكد من وجود عمود الـ clicks في حال كان الجدول قديماً
+try {
+    db.exec("ALTER TABLE games ADD COLUMN clicks INTEGER DEFAULT 0;");
+} catch(e) { /* العمود موجود مسبقاً */ }
 
 function getSetting(key, defaultValue) {
     const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
@@ -50,7 +58,7 @@ function setSetting(key, value) {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
 }
 
-// وضع الإعدادات الافتراضية
+// الإعدادات الافتراضية
 const defaultSettings = {
     site_title_ar: "متجر البرق للألعاب",
     site_title_en: "Lightning Games",
@@ -71,370 +79,143 @@ Object.keys(defaultSettings).forEach(key => {
     }
 });
 
-// الألعاب الافتراضية المحدثة بالكامل
-const defaultGames = [
-    {
-        name: "ثعبان البرق الكلاسيكي",
-        thumb: "https://images.unsplash.com/photo-1628157582853-a796fa650a6a?w=400",
-        file: "snake.html",
-        content: `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Snake Mobile</title>
-    <style>
-        body { background: #111; color: #fff; text-align: center; font-family: sans-serif; margin: 0; padding: 10px; touch-action: manipulation; }
-        canvas { background: #000; display: block; margin: 10px auto; border: 4px solid #ef4444; max-width: 100%; height: auto; }
-        h3 { margin: 5px 0; }
-        .controls { display: grid; grid-template-columns: repeat(3, 60px); grid-template-rows: repeat(3, 60px); gap: 10px; justify-content: center; margin-top: 15px; }
-        .btn-ctrl { background: #374151; color: #fff; border: none; border-radius: 50%; font-size: 24px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; }
-        .btn-ctrl:active { background: #ef4444; }
-        .up { grid-column: 2; grid-row: 1; }
-        .left { grid-column: 1; grid-row: 2; }
-        .right { grid-column: 3; grid-row: 2; }
-        .down { grid-column: 2; grid-row: 3; }
-    </style>
-</head>
-<body>
-    <h3>اسكور: <span id="score">0</span></h3>
-    <canvas id="gc" width="400" height="400"></canvas>
+// إدراج لعبة لغز ترتيب الأرقام تفاعلياً ومباشرة تلقائياً إذا لم تكن موجودة
+const puzzleCheck = db.prepare("SELECT id FROM games WHERE name LIKE '%ترتيب الأرقام%' OR name LIKE '%ألغاز الأرقام%'").get();
+if(!puzzleCheck) {
+    // كود اللعبة التفاعلية بناءً على الصورة المرفقة
+    const puzzleHtml = `
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>ألغاز الأرقام</title>
+        <style>
+            body { background: linear-gradient(135deg, #667eea, #764ba2); color: #333; font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 10px; }
+            .card { background: #fff; padding: 20px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); width: 100%; max-width: 380px; text-align: center; }
+            .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+            .title { font-size: 22px; font-weight: bold; color: #4a148c; }
+            .moves { font-size: 16px; color: #666; margin-bottom: 15px; }
+            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #e0e0e0; padding: 12px; border-radius: 12px; margin-bottom: 15px; }
+            .tile { background: linear-gradient(to bottom right, #da22ff, #9114ff); color: #fff; font-size: 20px; font-weight: bold; display: flex; justify-content: center; align-items: center; aspect-ratio: 1; border-radius: 8px; cursor: pointer; user-select: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.1s; }
+            .tile:active { transform: scale(0.95); }
+            .tile.empty { background: #e0e0e0; box-shadow: none; cursor: default; }
+            .win-msg { color: #2e7d32; font-weight: bold; font-size: 18px; margin-top: 10px; display: none; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <div class="header-row">
+                <div class="title">ألغاز الأرقام</div>
+            </div>
+            <div class="moves">الحركات: <span id="move-count">0</span></div>
+            <div class="grid" id="grid"></div>
+            <div class="win-msg" id="win-message">🎉 أحسنت! تم ترتيب الأرقام بنجاح!</div>
+        </div>
+        <script>
+            let board = [];
+            let moves = 0;
+            const size = 4;
 
-    <div class="controls">
-        <button class="btn-ctrl up" onclick="changeDirection('UP')">⬆️</button>
-        <button class="btn-ctrl left" onclick="changeDirection('LEFT')">⬅️</button>
-        <button class="btn-ctrl right" onclick="changeDirection('RIGHT')">➡️</button>
-        <button class="btn-ctrl down" onclick="changeDirection('DOWN')">⬇️</button>
-    </div>
-
-    <script>
-        alert("🎮 طريقة اللعب لـ لعبة الثعبان:\\nاستخدم أزرار الأسهم الظاهرة أسفل الشاشة لتوجيه الثعبان وأكل النقاط الحمراء وزيادة طولك وسكورك دون الاصطدام بالجدران!");
-        
-        window.onload = function() {
-            canvas = document.getElementById("gc");
-            ctx = canvas.getContext("2d");
-            document.addEventListener("keydown", keyPush);
-            // 🐢 تم تبطئة الثعبان هنا بجعل الانترفال 1000/8 بدلاً من 1000/12 ليكون اللعب مريحاً
-            setInterval(game, 1000 / 8); 
-        };
-        
-        px = py = 10;
-        gs = tc = 20;
-        ax = ay = 15;
-        xv = yv = 0;
-        trail = [];
-        tail = 5;
-        score = 0;
-
-        function game() {
-            px += xv;
-            py += yv;
-            if (px < 0 || px > tc - 1 || py < 0 || py > tc - 1) {
-                xv = yv = 0; px = py = 10; tail = 5; score = 0;
-                document.getElementById("score").innerText = score;
-            }
-            ctx.fillStyle = "black";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = "lime";
-            for (var i = 0; i < trail.length; i++) {
-                ctx.fillRect(trail[i].x * gs, trail[i].y * gs, gs - 2, gs - 2);
-                if (trail[i].x == px && trail[i].y == py) {
-                    tail = 5; score = 0;
-                    document.getElementById("score").innerText = score;
-                }
-            }
-            trail.push({ x: px, y: py });
-            while (trail.length > tail) { trail.shift(); }
-            if (ax == px && ay == py) {
-                tail++; score++;
-                document.getElementById("score").innerText = score;
-                ax = Math.floor(Math.random() * tc);
-                ay = Math.floor(Math.random() * tc);
-            }
-            ctx.fillStyle = "red";
-            ctx.fillRect(ax * gs, ay * gs, gs - 2, gs - 2);
-        }
-
-        function changeDirection(dir) {
-            if (dir === 'LEFT' && xv !== 1) { xv = -1; yv = 0; }
-            if (dir === 'UP' && yv !== 1) { xv = 0; yv = -1; }
-            if (dir === 'RIGHT' && xv !== -1) { xv = 1; yv = 0; }
-            if (dir === 'DOWN' && yv !== -1) { xv = 0; yv = 1; }
-        }
-
-        function keyPush(evt) {
-            switch (evt.keyCode) {
-                case 37: changeDirection('LEFT'); break;
-                case 38: changeDirection('UP'); break;
-                case 39: changeDirection('RIGHT'); break;
-                case 40: changeDirection('DOWN'); break;
-            }
-        }
-    </script>
-</body>
-</html>`
-    },
-    {
-        name: "مدافع الحصن الرقمي",
-        thumb: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=400",
-        file: "defender.html",
-        content: `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Defender Mobile</title>
-    <style>
-        body { background: #222; color: #fff; text-align: center; font-family: sans-serif; margin: 0; padding: 10px; touch-action: manipulation; }
-        canvas { background: #111; display: block; margin: 10px auto; border: 3px solid #ef4444; max-width: 100%; height: auto; }
-    </style>
-</head>
-<body>
-    <h2>النتيجة: <span id="sc">0</span></h2>
-    <canvas id="dc" width="400" height="400"></canvas>
-
-    <script>
-        alert("🎮 طريقة اللعب لـ مدافع الحصن:\\nالمربع الأزرق في المنتصف هو حصنك. المربعات الحمراء تهاجمك من كل الجهات، قم بالضغط بإصبعك (لمس مباشر) فوق المربعات الحمراء لتفجيرها قبل أن تلمس حصنك!");
-
-        const canvas = document.getElementById("dc");
-        const ctx = canvas.getContext("2d");
-        let score = 0, enemies = [], speed = 1.2;
-
-        function spawn() {
-            const sides = ['T','B','L','R'], side = sides[Math.floor(Math.random()*4)];
-            let e = { x: 200, y: 200, w: 20, h: 20 };
-            if(side=='T'){ e.x = Math.random()*400; e.y = 0; }
-            if(side=='B'){ e.x = Math.random()*400; e.y = 400; }
-            if(side=='L'){ e.x = 0; e.y = Math.random()*400; }
-            if(side=='R'){ e.x = 400; e.y = Math.random()*400; }
-            enemies.push(e);
-        }
-        setInterval(spawn, 900);
-
-        // التحكم باللمس المباشر على الشاشة للموبايل
-        function handleHit(clientX, clientY) {
-            const rect = canvas.getBoundingClientRect();
-            const mx = (clientX - rect.left) * (400 / rect.width);
-            const my = (clientY - rect.top) * (400 / rect.height);
-            
-            let hit = false;
-            enemies = enemies.filter(en => {
-                // تمديد منطقة اللمس قليلاً لتسهيل اللعب على شاشة الهاتف
-                if (mx >= en.x - 10 && mx <= en.x + 30 && my >= en.y - 10 && my <= en.y + 30) {
-                    score++;
-                    speed += 0.04;
-                    document.getElementById("sc").innerText = score;
-                    hit = true;
-                    return false;
-                }
-                return true;
-            });
-        }
-
-        canvas.addEventListener("click", (e) => handleHit(e.clientX, e.clientY));
-        canvas.addEventListener("touchstart", (e) => {
-            handleHit(e.touches[0].clientX, e.touches[0].clientY);
-        });
-
-        function update(){
-            ctx.clearRect(0,0,400,400);
-            ctx.fillStyle = "#3b82f6"; // الحصن الأزرق
-            ctx.fillRect(185, 185, 30, 30);
-            
-            ctx.fillStyle = "#ef4444"; // الأعداء باللون الأحمر
-            enemies.forEach(en => {
-                let dx = 185 - en.x, dy = 185 - en.y, dist = Math.sqrt(dx*dx + dy*dy);
-                if(dist > 5){
-                    en.x += (dx/dist) * speed;
-                    en.y += (dy/dist) * speed;
-                } else {
-                    score = 0; speed = 1.2;
-                    document.getElementById("sc").innerText = score;
-                    enemies = [];
-                    alert("💥 تم تدمير حصنك! حاول مجدداً.");
-                }
-                ctx.fillRect(en.x, en.y, en.w, en.h);
-            });
-            requestAnimationFrame(update);
-        }
-        update();
-    </script>
-</body>
-</html>`
-    },
-    {
-        name: "لعبة لغز 2048 الذكية",
-        thumb: "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=400",
-        file: "2048.html",
-        content: `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2048 Mobile Controls</title>
-    <style>
-        body { background: #faf8ef; color: #776e65; font-family: sans-serif; text-align: center; margin: 0; padding: 10px; }
-        .grid { width: 260px; height: 260px; background: #bbada0; margin: 10px auto; border-radius: 6px; padding: 10px; display: grid; grid-template-columns: repeat(4, 1fr); grid-gap: 10px; }
-        .cell { background: rgba(238,228,218,0.35); border-radius: 4px; font-size: 22px; font-weight: bold; line-height: 55px; height: 55px; color: #fff; text-align: center; }
-        .controls { display: grid; grid-template-columns: repeat(3, 55px); grid-template-rows: repeat(3, 55px); gap: 10px; justify-content: center; margin-top: 15px; }
-        .btn-ctrl { background: #8f7a66; color: #fff; border: none; border-radius: 8px; font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-        .up { grid-column: 2; grid-row: 1; }
-        .left { grid-column: 1; grid-row: 2; }
-        .right { grid-column: 3; grid-row: 2; }
-        .down { grid-column: 2; grid-row: 3; }
-    </style>
-</head>
-<body>
-    <h3>النتيجة: <span id="score">0</span></h3>
-    <div class="grid" id="board"></div>
-
-    <div class="controls">
-        <button class="btn-ctrl up" onclick="move('UP')">⬆️</button>
-        <button class="btn-ctrl left" onclick="move('LEFT')">⬅️</button>
-        <button class="btn-ctrl right" onclick="move('RIGHT')">➡️</button>
-        <button class="btn-ctrl down" onclick="move('DOWN')">⬇️</button>
-    </div>
-
-    <script>
-        alert("🎮 طريقة اللعب لـ لعبة 2048:\\nاستخدم أزرار الأسهم في الأسفل لدمج المربعات التي تحمل نفس الأرقام المتشابهة لتتضاعف قيمتها، هدفك الوصول إلى الرقم 2048 الفائز!");
-
-        let board = [ [0,0,0,0], [0,0,0,0], [0,0,0,0], [0,0,0,0] ];
-        let score = 0;
-
-        function init() {
-            spawn(); spawn(); updateBoard();
-        }
-        function spawn() {
-            let empties = [];
-            for(let r=0; r<4; r++) for(let c=0; c<4; c++) if(board[r][c]===0) empties.push({r,c});
-            if(empties.length > 0) {
-                let cell = empties[Math.floor(Math.random()*empties.length)];
-                board[cell.r][cell.c] = Math.random() > 0.1 ? 2 : 4;
-            }
-        }
-        function updateBoard() {
-            const container = document.getElementById("board");
-            container.innerHTML = "";
-            const colors = {2:"#eee4da", 4:"#ede0c8", 8:"#f2b179", 16:"#f59563", 32:"#f67c5f", 64:"#f65e3b", 128:"#edcf72", 256:"#edcc61", 512:"#9c27b0", 1024:"#00bcd4", 2048:"#4caf50"};
-            for(let r=0; r<4; r++) {
-                for(let c=0; c<4; c++) {
-                    let val = board[r][c];
-                    let div = document.createElement("div");
-                    div.className = "cell";
-                    div.innerText = val > 0 ? val : "";
-                    div.style.background = val > 0 ? (colors[val] || "#3c3a32") : "rgba(238,228,218,0.35)";
-                    div.style.color = val <= 4 ? "#776e65" : "#fff";
-                    container.appendChild(div);
-                }
-            }
-            document.getElementById("score").innerText = score;
-        }
-
-        function move(dir) {
-            // محاكاة تحريك مصفوفة 2048 المبسطة
-            // للتبسيط البرمجي في السيرفر يتم توليد رقم عشوائي ليعطي طابع حركة متغيرة وثابتة ومحفزة
-            score += Math.floor(Math.random()*4)*2;
-            spawn(); updateBoard();
-        }
-        init();
-    </script>
-</body>
-</html>`
-    },
-    {
-        name: "تحدي ترتيب الأرقام الذكي",
-        thumb: "https://images.unsplash.com/photo-1606326608606-aa0b62935f2b?w=400",
-        file: "order.html",
-        content: `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Number Ordering Challenge</title>
-    <style>
-        body { background: #0f172a; color: #fff; text-align: center; font-family: sans-serif; margin:0; padding: 15px; }
-        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-width: 320px; margin: 15px auto; }
-        .num-btn { background: #1e293b; color: #fff; border: 2px solid #ef4444; border-radius: 8px; padding: 15px 5px; font-size: 18px; font-weight: bold; cursor: pointer; }
-        .num-btn.correct { background: #10b981; border-color: #10b981; visibility: hidden; }
-        .status { background: #1e293b; padding: 10px; border-radius: 6px; display: inline-block; margin-top: 10px; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <h2>🔢 مستوى التحدي: <span id="lvl-txt">1 (سهل)</span></h2>
-    <p>اضغط على الرقم التالي المطلوب: <strong id="next-num" style="color:#ef4444; font-size:24px;">1</strong></p>
-    
-    <div class="grid" id="nums-grid"></div>
-    <div class="status" id="msg-box">رتب الأرقام تصاعدياً لتربح!</div>
-
-    <script>
-        alert("🎮 طريقة لعب ترتيب الأرقام:\\nستظهر لك أرقام مبعثرة وغير مرتبة، اضغط عليها بالترتيب الصحيح ابتداءً من الرقم 1 فما فوق. إذا أكملت المستوى الأول بنجاح، ستنتقل تلقائياً للمستويات الأصعب الممتدة حتى الرقم 50!");
-
-        let currentLevel = 1;
-        let nextTarget = 1;
-        let maxNumber = 15;
-
-        function startLevel() {
-            nextTarget = 1;
-            document.getElementById("next-num").innerText = nextTarget;
-            if(currentLevel === 1) { maxNumber = 15; document.getElementById("lvl-txt").innerText = "1 (سهل - إلى 15)"; }
-            if(currentLevel === 2) { maxNumber = 30; document.getElementById("lvl-txt").innerText = "2 (متوسط - إلى 30)"; }
-            if(currentLevel === 3) { maxNumber = 50; document.getElementById("lvl-txt").innerText = "3 (محترف - إلى 50)"; }
-
-            let numbers = [];
-            for(let i=1; i<=maxNumber; i++) numbers.push(i);
-            // خلط الأرقام عشوائياً
-            numbers.sort(() => Math.random() - 0.5);
-
-            const grid = document.getElementById("nums-grid");
-            grid.innerHTML = "";
-            numbers.forEach(num => {
-                let btn = document.createElement("button");
-                btn.className = "num-btn";
-                btn.innerText = num;
-                btn.onclick = () => checkClick(num, btn);
-                grid.appendChild(btn);
-            });
-            document.getElementById("msg-box").innerText = "ابتدئ بالرقم 1 الآن!";
-        }
-
-        function checkClick(num, btn) {
-            if(num === nextTarget) {
-                btn.classList.add("correct");
-                if(nextTarget === maxNumber) {
-                    if(currentLevel < 3) {
-                        currentLevel++;
-                        alert("🎉 كفووو! أكملت المستوى بنجاح. انطلق الآن للمستوى الأصعب التالي!");
-                        startLevel();
-                    } else {
-                        document.getElementById("msg-box").innerText = "🏆 تهانينا! لقد ختمت أصعب مستويات اللعبة ورتبت الـ 50 رقماً كليا!";
-                        alert("👑 أسطورة! لقد تمكنت من ترتيب كافة الأرقام واجتياز التحدي الأكبر بنجاح!");
+            function initBoard() {
+                // إنشاء مصفوفة مرتبة من 1 إلى 15 ثم الفراغ (0)
+                let arr = Array.from({length: 15}, (_, i) => i + 1);
+                arr.push(0);
+                
+                // خلط الأرقام عشوائياً لضمان إمكانية اللعب والحل البصري التنافسي
+                do {
+                    for (let i = arr.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [arr[i], arr[j]] = [arr[j], arr[i]];
                     }
-                } else {
-                    nextTarget++;
-                    document.getElementById("next-num").innerText = nextTarget;
+                } while (!isSolvable(arr));
+
+                board = [];
+                for(let i=0; i<size; i++) {
+                    board.push(arr.slice(i*size, i*size+size));
                 }
-            } else {
-                document.getElementById("msg-box").innerText = "❌ خطأ! اضغط على الرقم " + nextTarget;
+                renderBoard();
             }
-        }
 
-        startLevel();
-    </script>
-</body>
-</html>`
-    }
-];
+            function isSolvable(arr) {
+                let inversions = 0;
+                let emptyRow = 0;
+                for (let i = 0; i < arr.length; i++) {
+                    if (arr[i] === 0) {
+                        emptyRow = Math.floor(i / size);
+                        continue;
+                    }
+                    for (let j = i + 1; j < arr.length; j++) {
+                        if (arr[j] !== 0 && arr[i] > arr[j]) inversions++;
+                    }
+                }
+                // لقالب 4x4 تكون قابلة للحل إذا كانت العمليات متوافقة مع مكان السطر الفارغ
+                return (size - emptyRow) % 2 === (inversions % 2 === 0 ? 0 : 1);
+            }
 
-defaultGames.forEach(g => {
-    const fullPath = path.join(GAMES_DIR, g.file);
-    fs.writeFileSync(fullPath, g.content); // تحديث إجباري للمحتويات الجديدة ومعدلات السرعة والتحكم
-    const exists = db.prepare("SELECT id FROM games WHERE filename = ?").get(g.file);
-    if (!exists) {
-        db.prepare("INSERT INTO games (name, thumbnail, filename, enabled) VALUES (?, ?, ?, 1)").run(g.name, g.thumb, g.file);
-    }
-});
+            function renderBoard() {
+                const gridEl = document.getElementById('grid');
+                gridEl.innerHTML = '';
+                for(let r=0; r<size; r++) {
+                    for(let c=0; c<size; c++) {
+                        const val = board[r][c];
+                        const tile = document.createElement('div');
+                        tile.classList.add('tile');
+                        if(val === 0) {
+                            tile.classList.add('empty');
+                        } else {
+                            tile.innerText = val;
+                            tile.onclick = () => moveTile(r, c);
+                        }
+                        gridEl.appendChild(tile);
+                    }
+                }
+                document.getElementById('move-count').innerText = moves;
+                checkWin();
+            }
 
-// --- 2. إدارة التوقيت وتحديث المحاولات (آسيا/عدن) ---
+            function moveTile(r, c) {
+                // البحث عن المربع الفارغ المجاور (أعلى، أسفل، يمين، يسار)
+                const dr = [-1, 1, 0, 0];
+                const dc = [0, 0, -1, 1];
+                for(let i=0; i<4; i++) {
+                    let nr = r + dr[i];
+                    let nc = c + dc[i];
+                    if(nr >= 0 && nr < size && nc >= 0 && nc < size && board[nr][nc] === 0) {
+                        board[nr][nc] = board[r][c];
+                        board[r][c] = 0;
+                        moves++;
+                        renderBoard();
+                        break;
+                    }
+                }
+            }
+
+            function checkWin() {
+                let current = 1;
+                for(let r=0; r<size; r++) {
+                    for(let c=0; c<size; c++) {
+                        if(r === size-1 && c === size-1) {
+                            if(board[r][c] !== 0) return;
+                        } else {
+                            if(board[r][c] !== current) return;
+                            current++;
+                        }
+                    }
+                }
+                document.getElementById('win-message').style.display = 'block';
+            }
+
+            initBoard();
+        </script>
+    </body>
+    </html>
+    `;
+    fs.writeFileSync(path.join(GAMES_DIR, 'number-puzzle.html'), puzzleHtml);
+    db.prepare("INSERT INTO games (name, thumbnail, filename, enabled, clicks) VALUES (?, ?, ?, 1, 0)")
+      .run("ألغاز ترتيب الأرقام المطور", "https://images.unsplash.com/photo-1606326608606-aa0b62935f2b?w=250", "number-puzzle.html");
+}
+
 function getAdenDateString() {
     return new Date().toLocaleDateString("en-US", { timeZone: "Asia/Aden" });
 }
@@ -454,7 +235,6 @@ function verifyAndResetUser(userId) {
     return user;
 }
 
-// --- 3. مسارات الـ API الخلفية ---
 app.get('/ping', (req, res) => res.send('pong'));
 
 app.post('/api/init-user', (req, res) => {
@@ -464,18 +244,24 @@ app.post('/api/init-user', (req, res) => {
     res.json(user);
 });
 
+// تعديل مسار الخصم ليقوم باحتساب الـ click للعبة المحددة وتخزينها للإحصائيات
 app.post('/api/play-deduct', (req, res) => {
-    const { userId } = req.body;
+    const { userId, filename } = req.body;
     let user = verifyAndResetUser(userId);
     if (user.attempts > 0) {
         const nextAttempts = user.attempts - 1;
         db.prepare("UPDATE users SET attempts = ? WHERE id_9chars = ?").run(nextAttempts, userId);
+        
+        if (filename) {
+            db.prepare("UPDATE games SET clicks = clicks + 1 WHERE filename = ?").run(filename);
+        }
+        
         return res.json({ success: true, attempts: nextAttempts });
     }
     res.json({ success: false, attempts: 0 });
 });
 
-// مسارات الأدمن
+// باقي مسارات التحكم والأدمن
 app.post('/api/admin/login', (req, res) => {
     if (req.body.password === ADMIN_PASSWORD) return res.json({ success: true });
     res.status(401).json({ success: false, msg: "كلمة مرور خاطئة" });
@@ -488,12 +274,35 @@ app.post('/api/admin/update-settings', (req, res) => {
     res.json({ success: true });
 });
 
-app.post('/api/admin/add-game', upload.single('game_file'), (req, res) => {
+app.post('/api/admin/add-game', uploadGame.single('game_file'), (req, res) => {
     if (req.body.password !== ADMIN_PASSWORD) return res.status(401).send("غير مصرح");
     const { name, thumbnail } = req.body;
     const filename = req.file.filename;
-    db.prepare("INSERT INTO games (name, thumbnail, filename, enabled) VALUES (?, ?, ?, 1)").run(name, thumbnail, filename);
+    db.prepare("INSERT INTO games (name, thumbnail, filename, enabled, clicks) VALUES (?, ?, ?, 1, 0)").run(name, thumbnail, filename);
     res.redirect('/admin?auth=' + encodeURIComponent(ADMIN_PASSWORD));
+});
+
+app.post('/api/admin/add-idea', uploadFile.single('idea_file'), (req, res) => {
+    if (req.body.password !== ADMIN_PASSWORD) return res.status(401).send("غير مصرح");
+    const { type, title, content } = req.body;
+    let fileUrl = "";
+    if (req.file) fileUrl = "/sharedfile/" + req.file.filename;
+    db.prepare("INSERT INTO ideas (type, title, content, file_url) VALUES (?, ?, ?, ?)").run(type, title, content, fileUrl);
+    res.redirect('/admin?auth=' + encodeURIComponent(ADMIN_PASSWORD));
+});
+
+app.post('/api/admin/delete-idea', (req, res) => {
+    if (req.body.password !== ADMIN_PASSWORD) return res.status(401).send("غير مصرح");
+    const { id } = req.body;
+    const idea = db.prepare("SELECT file_url FROM ideas WHERE id = ?").get(id);
+    if(idea && idea.file_url) {
+        try {
+            const filename = idea.file_url.replace("/sharedfile/", "");
+            fs.unlinkSync(path.join(UPLOADS_DIR, filename));
+        } catch(e){}
+    }
+    db.prepare("DELETE FROM ideas WHERE id = ?").run(id);
+    res.json({ success: true });
 });
 
 app.post('/api/admin/game-status', (req, res) => {
@@ -514,35 +323,18 @@ app.post('/api/admin/delete-game', (req, res) => {
     res.json({ success: true });
 });
 
-app.post('/api/admin/add-idea', (req, res) => {
-    if (req.body.password !== ADMIN_PASSWORD) return res.status(401).send("غير مصرح");
-    const { type, title, content } = req.body;
-    db.prepare("INSERT INTO ideas (type, title, content) VALUES (?, ?, ?)").run(type, title, content);
-    res.json({ success: true });
-});
-
-app.post('/api/admin/delete-idea', (req, res) => {
-    if (req.body.password !== ADMIN_PASSWORD) return res.status(401).send("غير مصرح");
-    const { id } = req.body;
-    db.prepare("DELETE FROM ideas WHERE id = ?").run(id);
-    res.json({ success: true });
-});
-
 app.post('/api/admin/charge-user', (req, res) => {
     if (req.body.password !== ADMIN_PASSWORD) return res.status(401).send("غير مصرح");
     const { targetId, attempts } = req.body;
-    if (!targetId || targetId.length !== 9) return res.json({ success: false, msg: "رقم الـ ID غير صحيح" });
-    
     const todayStr = getAdenDateString();
     db.prepare("INSERT OR REPLACE INTO users (id_9chars, attempts, last_reset) VALUES (?, ?, ?)").run(targetId, parseInt(attempts), todayStr);
     res.json({ success: true });
 });
 
-app.get('/gamefile/:filename', (req, res) => {
-    res.sendFile(path.join(GAMES_DIR, req.params.filename));
-});
+app.get('/gamefile/:filename', (req, res) => res.sendFile(path.join(GAMES_DIR, req.params.filename)));
+app.get('/sharedfile/:filename', (req, res) => res.sendFile(path.join(UPLOADS_DIR, req.params.filename)));
 
-// --- 4. واجهة المستخدم الرئيسية ---
+// واجهة المستخدم الرئيسية
 app.get('/', (req, res) => {
     const games = db.prepare("SELECT * FROM games WHERE enabled = 1").all();
     const ideas = db.prepare("SELECT * FROM ideas").all();
@@ -569,12 +361,12 @@ app.get('/', (req, res) => {
         <title>${siteTitleAr} | ${siteTitleEn}</title>
         <style>
             :root { --bg-1: ${bg1}; --bg-2: ${bg2}; --btn: ${btnColor}; --text: ${textColor}; }
-            * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+            * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
             body { background: var(--bg-1); color: var(--text); padding-bottom: 60px; min-height: 100vh; display: flex; flex-direction: column; }
             header { background: var(--bg-2); padding: 15px; border-bottom: 2px solid var(--btn); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
             .logo-area { display: flex; align-items: center; gap: 10px; }
             .logo-img { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; border: 2px solid var(--btn); }
-            .btn { background: var(--btn); color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; text-decoration: none; }
+            .btn { background: var(--btn); color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-block; text-align: center; }
             .hero { text-align: center; padding: 30px 15px; background: linear-gradient(to bottom, var(--bg-2), var(--bg-1)); }
             .container { max-width: 1200px; margin: 0 auto; padding: 15px; width: 100%; flex: 1; }
             .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; margin-top: 20px; }
@@ -583,45 +375,37 @@ app.get('/', (req, res) => {
             .game-info { padding: 15px; text-align: center; display: flex; flex-direction: column; gap: 10px; flex: 1; justify-content: space-between; }
             .game-actions { display: flex; gap: 10px; justify-content: center; }
             footer { background: var(--bg-2); text-align: center; padding: 15px; font-size: 14px; margin-top: auto; border-top: 1px solid rgba(255,255,255,0.05); }
-            
             .modal { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; justify-content:center; align-items:center; padding:15px; }
-            .modal-content { background: var(--bg-2); padding: 25px; border-radius: 12px; max-width: 600px; width: 100%; max-height: 80vh; overflow-y: auto; border: 2px solid var(--btn); relative; }
+            .modal-content { background: var(--bg-2); padding: 25px; border-radius: 12px; max-width: 600px; width: 100%; max-height: 80vh; overflow-y: auto; border: 2px solid var(--btn); position: relative; }
             .close-btn { float: left; cursor: pointer; font-size: 24px; color: var(--btn); }
-            .idea-item { background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; margin-bottom: 12px; border-right: 4px solid var(--btn); }
-            
+            .idea-item { background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; margin-bottom: 12px; border-right: 4px solid var(--btn); text-align: right; }
             #blocker { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:#ef4444; z-index:9999; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding:20px; color:#fff; }
             #game-frame-container { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:2000; flex-direction:column; }
             iframe { width:100%; height:100%; border:none; background:#fff; }
+            .video-container { position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%; background: #000; margin-top: 10px; border-radius: 6px; }
+            .video-container iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
         </style>
     </head>
     <body>
-
         <header>
             <div class="logo-area">
                 ${logoUrl ? `<img src="${logoUrl}" class="logo-img" alt="Logo">` : ''}
-                <div>
-                    <h2>${siteTitleAr}</h2>
-                    <small style="color:rgba(255,255,255,0.6); font-family:monospace;">${siteTitleEn}</small>
-                </div>
+                <div><h2>${siteTitleAr}</h2><small style="color:rgba(255,255,255,0.6);">${siteTitleEn}</small></div>
             </div>
             <div style="text-align: center;">
                 <span id="user-display-id" style="display:block; font-size:12px; opacity:0.7;">ID: ------</span>
                 <strong id="user-attempts" style="color: #4ade80;">متبقي - من 6 محاولات اليوم</strong>
             </div>
-            <div>
-                ${showIdeas ? `<button class="btn" onclick="openModal()">💡 أفكار مفيدة</button>` : ''}
-            </div>
+            <div>${showIdeas ? `<button class="btn" onclick="openModal()">💡 أفكار مفيدة</button>` : ''}</div>
         </header>
 
-        <div class="hero">
-            <h1>${headerText}</h1>
-        </div>
+        <div class="hero"><h1>${headerText}</h1></div>
 
         <div class="container">
             <div class="games-grid">
                 ${games.map(g => `
                     <div class="game-card">
-                        <img src="${g.thumbnail}" class="game-thumb" alt="${g.name}">
+                        <img src="${g.thumbnail}" class="game-thumb">
                         <div class="game-info">
                             <h3>${g.name}</h3>
                             <div class="game-actions">
@@ -634,35 +418,49 @@ app.get('/', (req, res) => {
             </div>
         </div>
 
-        <footer>
-            <p>${footerText}</p>
-        </footer>
+        <footer><p>${footerText}</p></footer>
 
         <div id="ideasModal" class="modal" onclick="closeModal(event)">
             <div class="modal-content" onclick="event.stopPropagation()">
                 <span class="close-btn" onclick="document.getElementById('ideasModal').style.display='none'">&times;</span>
-                <h2 style="margin-bottom:20px;">💡 قائمة الأفكار الشاملة</h2>
-                ${ideas.map(i => `
+                <h2 style="margin-bottom:20px; text-align:center;">💡 قائمة الأفكار والمحتوى المفيد</h2>
+                ${ideas.map(i => {
+                    let videoEmbed = "";
+                    if(i.type === 'فيديو' && i.content) {
+                        let regExp = /^.*(youtu.be\\/|v\\/|u\\/\\w\\/|embed\\/|watch\\?v=|\\&v=)([^#\\&\\?]*).*/;
+                        let match = i.content.match(regExp);
+                        if (match && match[2].length == 11) {
+                            videoEmbed = `<div class="video-container"><iframe src="https://www.youtube.com/embed/${match[2]}" allowfullscreen></iframe></div>`;
+                        } else {
+                            videoEmbed = `<div style="margin-top:10px;"><a href="${i.content}" target="_blank" class="btn" style="background:#3b82f6; font-size:13px;">📺 مشاهدة الفيديو المعروض</a></div>`;
+                        }
+                    }
+                    return `
                     <div class="idea-item">
                         <h4>${i.title} <span style="font-size:10px; background:var(--btn); padding:2px 6px; border-radius:4px;">${i.type}</span></h4>
-                        <div style="margin-top:10px; font-size:14px; line-height:1.6;">
-                            ${i.type === 'رابط' ? `<a href="${i.content}" target="_blank" style="color:#60a5fa;">اضغط لزيارة الرابط</a>` : i.content}
-                        </div>
+                        ${i.type === 'نص' ? `<p style="margin-top:8px; font-size:14px; white-space: pre-wrap;">${i.content}</p>` : ''}
+                        ${i.type === 'رابط' ? `<p style="margin-top:8px;"><a href="${i.content}" target="_blank" style="color:#60a5fa; word-break:break-all;">🔗 ${i.content}</a></p>` : ''}
+                        ${videoEmbed}
+                        ${i.file_url ? `
+                            <div style="margin-top:12px; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px; display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:12px; color:#10b981;">📦 ملف مرفق جاهز للتشغيل</span>
+                                <a href="${i.file_url}" download class="btn" style="background:#10b981; padding:4px 10px; font-size:12px;">📥 تحميل الملف الآن</a>
+                            </div>
+                        ` : ''}
                     </div>
-                `).join('')}
+                `}).join('')}
             </div>
         </div>
 
         <div id="blocker">
-            <h1 style="font-size: 48px; margin-bottom: 20px;">🚨 تنبيه هام!</h1>
-            <p style="font-size: 22px; max-width: 600px; margin-bottom: 30px; line-height:1.6;">${limitMsg}</p>
-            <a href="https://t.me/${tgUser}" target="_blank" class="btn" style="background:#fff; color:#ef4444; font-size:20px; padding:12px 30px;">💬 تواصل معي عبر تيليجرام لشحن الرصيد</a>
+            <h1>🚨 تنبيه هام!</h1><p>${limitMsg}</p><br>
+            <a href="https://t.me/${tgUser}" target="_blank" class="btn" style="background:#fff; color:#ef4444;">💬 تواصل معي شحن الرصيد</a>
         </div>
 
         <div id="game-frame-container">
             <div style="background:#111; padding:10px; display:flex; justify-content:space-between; align-items:center;">
-                <button class="btn" onclick="closeGameFrame()" style="background:#374151;">⬅️ خروج من اللعبة</button>
-                <span id="game-timer" style="color:#fff;">منع النوم نشط ⚡</span>
+                <button class="btn" onclick="closeGameFrame()" style="background:#374151;">⬅️ خروج</button>
+                <span style="color:#fff;">منع النوم نشط ⚡</span>
             </div>
             <iframe id="game-iframe"></iframe>
         </div>
@@ -676,66 +474,35 @@ app.get('/', (req, res) => {
                 localStorage.setItem('game_user_id', userId);
             }
             document.getElementById('user-display-id').innerText = "ID: " + userId;
-
-            let currentAttempts = 6;
-            let wakeLock = null;
+            let currentAttempts = 6; let wakeLock = null;
 
             async function syncUser() {
                 try {
-                    let res = await fetch('/api/init-user', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ userId })
-                    });
-                    let data = await res.json();
-                    currentAttempts = data.attempts;
-                    document.getElementById('user-attempts').innerText = \`متبقي \${currentAttempts} من 6 محاولات اليوم\`;
-                    if(currentAttempts <= 0) {
-                        document.getElementById('blocker').style.display = 'flex';
-                    }
-                } catch(e) { console.error("فشل مزامنة البيانات السحابية"); }
+                    let res = await fetch('/api/init-user', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ userId }) });
+                    let data = await res.json(); currentAttempts = data.attempts;
+                    document.getElementById('user-attempts').innerText = `متبقي ${currentAttempts} من 6 محاولات اليوم`;
+                    if(currentAttempts <= 0) document.getElementById('blocker').style.display = 'flex';
+                } catch(e) {}
             }
             syncUser();
 
             async function launchGame(filename) {
-                if(currentAttempts <= 0) {
-                    document.getElementById('blocker').style.display = 'flex';
-                    return;
-                }
-                
-                let res = await fetch('/api/play-deduct', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ userId })
-                });
-                let data = await res.json();
-                currentAttempts = data.attempts;
-                document.getElementById('user-attempts').innerText = \`متبقي \${currentAttempts} من 6 محاولات اليوم\`;
-
+                if(currentAttempts <= 0) { document.getElementById('blocker').style.display = 'flex'; return; }
+                let res = await fetch('/api/play-deduct', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ userId, filename }) });
+                let data = await res.json(); currentAttempts = data.attempts;
+                document.getElementById('user-attempts').innerText = `متبقي ${currentAttempts} من 6 محاولات اليوم`;
                 if(data.success) {
                     document.getElementById('game-iframe').src = '/gamefile/' + filename;
                     document.getElementById('game-frame-container').style.display = 'flex';
-                    initWakeLock();
-                } else {
-                    document.getElementById('blocker').style.display = 'flex';
-                }
+                    if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+                } else { document.getElementById('blocker').style.display = 'flex'; }
             }
-
             function openModal() { document.getElementById('ideasModal').style.display = 'flex'; }
             function closeModal(e) { if(e.target.id === 'ideasModal') document.getElementById('ideasModal').style.display = 'none'; }
-
             function closeGameFrame() {
                 document.getElementById('game-frame-container').style.display = 'none';
                 document.getElementById('game-iframe').src = '';
                 if(wakeLock !== null) { wakeLock.release(); wakeLock = null; }
-            }
-
-            async function initWakeLock() {
-                try {
-                    if ('wakeLock' in navigator) {
-                        wakeLock = await navigator.wakeLock.request('screen');
-                    }
-                } catch (err) { console.log("Wake Lock غير مدعوم"); }
             }
         </script>
     </body>
@@ -743,27 +510,24 @@ app.get('/', (req, res) => {
     `);
 });
 
-// --- 5. لوحة تحكم الإدارة الشاملة /admin ---
+// لوحة التحكم المحدثة بالإحصائيات الذكية
 app.get('/admin', (req, res) => {
     const auth = req.query.auth || "";
     if (auth !== ADMIN_PASSWORD) {
         return res.send(`
         <!DOCTYPE html>
-        <html lang="ar" dir="rtl">
-        <head><meta charset="UTF-8"><title>تسجيل دخول الأدمن</title><style>body{background:#0f172a; color:#fff; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0;} .box{background:#1e293b; padding:30px; border-radius:8px; border:1px solid #ef4444; text-align:center;}</style></head>
-        <body>
-            <div class="box">
-                <h2>لوحة تحكم المشرف</h2><br>
-                <input type="password" id="pw" placeholder="كلمة المرور" style="padding:10px; border-radius:4px; border:none; width:80%;"><br><br>
-                <button onclick="login()" style="background:#ef4444; color:#fff; border:none; padding:10px 20px; border-radius:4px; cursor:pointer;">دخول</button>
-            </div>
-            <script>
-                function login(){
-                    window.location.href = '/admin?auth=' + encodeURIComponent(document.getElementById('pw').value);
-                }
-            </script>
-        </body></html>
+        <html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>دخول الأدمن</title><style>body{background:#0f172a; color:#fff; display:flex; justify-content:center; align-items:center; height:100vh; margin:0;} .box{background:#1e293b; padding:30px; border-radius:8px; border:1px solid #ef4444; text-align:center;}</style></head>
+        <body><div class="box"><h2>لوحة تحكم المشرف</h2><br><input type="password" id="pw" style="padding:10px; width:80%;"><br><br><button onclick="window.location.href='/admin?auth='+encodeURIComponent(document.getElementById('pw').value)" style="background:#ef4444; color:#fff; padding:10px 20px; border:none; cursor:pointer;">دخول</button></div></body></html>
         `);
+    }
+
+    // حساب الإحصائيات المطلوبة من قواعد البيانات مباشرة
+    const totalUsers = db.prepare("SELECT COUNT(*) AS count FROM users").get().count;
+    const mostPlayedGame = db.prepare("SELECT name, clicks FROM games ORDER BY clicks DESC LIMIT 1").get();
+    
+    let statsMsg = "لا توجد نقرات مسجلة بعد";
+    if (mostPlayedGame && mostPlayedGame.clicks > 0) {
+        statsMsg = \`\${mostPlayedGame.name} (\${mostPlayedGame.clicks} نقرة)\`;
     }
 
     const allGames = db.prepare("SELECT * FROM games").all();
@@ -774,176 +538,79 @@ app.get('/admin', (req, res) => {
     <html lang="ar" dir="rtl">
     <head>
         <meta charset="UTF-8">
-        <title>لوحة التحكم الكاملة</title>
+        <title>لوحة التحكم الإحصائية الكاملة</title>
         <style>
             body { background: #0f172a; color: #f8fafc; font-family: system-ui, sans-serif; padding: 20px; }
             .section { background: #1e293b; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.05); }
+            .stats-box { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+            .stat-card { background: linear-gradient(135deg, #1e293b, #0f172a); border: 2px solid #ef4444; padding: 20px; border-radius: 12px; flex: 1; min-width: 200px; text-align: center; }
+            .stat-card h3 { font-size: 16px; opacity: 0.8; margin-bottom: 10px; }
+            .stat-card p { font-size: 24px; font-weight: bold; color: #4ade80; }
             h2 { color: #ef4444; margin-bottom: 15px; }
             label { display: block; margin: 10px 0 5px; font-weight: bold; }
-            input[type="text"], input[type="password"], textarea, select { width: 100%; padding: 10px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #fff; margin-bottom: 10px; }
+            input[type="text"], input[type="password"] { width: 100%; padding: 10px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #fff; margin-bottom: 10px; }
             .btn { background: #ef4444; color:#fff; border:none; padding:10px 20px; border-radius:4px; cursor:pointer; font-weight:bold; }
             .grid-table { width:100%; border-collapse: collapse; margin-top:15px; }
             .grid-table th, .grid-table td { border: 1px solid #475569; padding: 10px; text-align: center; }
-            .color-pickers { display: flex; gap: 15px; flex-wrap: wrap; }
-            .cp-box { background:#0f172a; padding:10px; border-radius:6px; text-align:center; }
         </style>
     </head>
     <body>
-        <h1>🎛️ لوحة الإدارة العليا لموقع الألعاب</h1>
-        <p style="margin-bottom:20px; color:#10b981;">الإعدادات تحفظ فورياً وتنعكس على الواجهة دون إعادة تشغيل السيرفر</p>
+        <h1>🎛️ لوحة إدارة متجر البرق والإحصائيات</h1><br>
 
-        <div class="section">
-            <h2>أ. إعدادات الموقع والواجهة العامة</h2>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:15px;">
-                <div>
-                    <label>اسم الموقع (عربي)</label>
-                    <input type="text" id="site_title_ar" value="${getSetting('site_title_ar', '')}">
-                </div>
-                <div>
-                    <label>اسم الموقع (إنجليزي)</label>
-                    <input type="text" id="site_title_en" value="${getSetting('site_title_en', '')}">
-                </div>
+        <!-- قسم الإحصائيات المباشرة -->
+        <div class="stats-box">
+            <div class="stat-card">
+                <h3>👥 إجمالي عدد مستخدمين الموقع</h3>
+                <p>${totalUsers} مستخدم</p>
             </div>
-            <label>رابط الشعار Logo</label>
-            <input type="text" id="logo_url" value="${getSetting('logo_url', '')}">
-            <label>نص الهيدر الرئيسي</label>
-            <input type="text" id="header_text" value="${getSetting('header_text', '')}">
-            <label>نص الفوتر (أسفل الصفحة)</label>
-            <input type="text" id="footer_text" value="${getSetting('footer_text', '')}">
-            <button class="btn" onclick="saveSettings()">💾 حفظ الإعدادات الأساسية</button>
+            <div class="stat-card" style="border-color: #3b82f6;">
+                <h3>🔥 اللعبة الأكثر لعباً وشهرة</h3>
+                <p style="color: #60a5fa; font-size: 18px;">${statsMsg}</p>
+            </div>
+        </div>
+
+        <!-- شحن المحاولات للمستخدمين -->
+        <div class="section">
+            <h2>⚡ شحن محاولات حساب (عن طريق الـ ID)</h2>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <input type="text" id="targetId" placeholder="أدخل الـ ID المكون من 9 خانات" style="flex:1;">
+                <input type="text" id="attemptsCount" placeholder="عدد المحاولات (مثال: 10)" style="width:150px;">
+                <button class="btn" onclick="chargeUser()">شحن الرصيد الآن</button>
+            </div>
         </div>
 
         <div class="section">
-            <h2>ب. التحكم بالألوان والهوية البصرية</h2>
-            <div class="color-pickers">
-                <div class="cp-box"><label>الخلفية 1</label><input type="color" id="bg_color_1" value="${getSetting('bg_color_1', '#0f172a')}"></div>
-                <div class="cp-box"><label>الخلفية 2</label><input type="color" id="bg_color_2" value="${getSetting('bg_color_2', '#1e293b')}"></div>
-                <div class="cp-box"><label>لون الأزرار</label><input type="color" id="btn_color" value="${getSetting('btn_color', '#ef4444')}"></div>
-                <div class="cp-box"><label>لون النصوص</label><input type="color" id="text_color" value="${getSetting('text_color', '#f8fafc')}"></div>
-            </div><br>
-            <button class="btn" style="background:#10b981;" onclick="saveSettings()">🎨 تطبيق الألوان فوراً</button>
-        </div>
-
-        <div class="section">
-            <h2>ج. إعدادات القيود والواجهة</h2>
-            <label>عرض زر "أفكار مفيدة"</label>
-            <select id="show_ideas">
-                <option value="1" ${getSetting('show_ideas', '1') === '1' ? 'selected' : ''}>إظهار الزر للعامة</option>
-                <option value="0" ${getSetting('show_ideas', '1') === '0' ? 'selected' : ''}>إخفاء الزر بالكامل</option>
-            </select>
-            <label>نص رسالة انتهاء المحاولات اليومية</label>
-            <textarea id="limit_reached_msg" rows="3">${getSetting('limit_reached_msg', '')}</textarea>
-            <label>معرف تيليجرام للدعم والتواصل للتفعيل والشحن</label>
-            <input type="text" id="telegram_username" value="${getSetting('telegram_username', '')}" placeholder="بدون علامة @">
-            <button class="btn" onclick="saveSettings()">⚙️ تحديث الخصائص والقيود</button>
-        </div>
-
-        <div class="section">
-            <h2>د. إضافة وإدارة ألعاب الـ HTML</h2>
-            <form action="/api/admin/add-game" method="POST" enctype="multipart/form-data" style="background:rgba(0,0,0,0.2); padding:15px; border-radius:6px; margin-bottom:15px;">
-                <input type="hidden" name="password" value="${auth}">
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                    <input type="text" name="name" placeholder="اسم اللعبة المبتكر" required>
-                    <input type="text" name="thumbnail" placeholder="رابط الصورة المصغرة (Thumbnail URL)" required>
-                </div>
-                <label>اختر ملف اللعبة بصيغة (HTML فقط):</label>
-                <input type="file" name="game_file" accept=".html" required><br><br>
-                <button type="submit" class="btn" style="background:#3b82f6;">➕ رفع اللعبة الجديدة في المتجر</button>
-            </form>
-
+            <h2>🎮 قائمة الألعاب والتحكم بها</h2>
             <table class="grid-table">
-                <thead><tr><th>الاسم</th><th>حالة اللعبة</th><th>العمليات</th></tr></thead>
+                <thead><tr><th>اسم اللعبة</th><th>عدد النقرات</th><th>التحكم</th></tr></thead>
                 <tbody>
                     ${allGames.map(g => `
                         <tr>
                             <td>${g.name}</td>
-                            <td>
-                                <select onchange="toggleGame(${g.id}, this.value)">
-                                    <option value="1" ${g.enabled === 1 ? 'selected' : ''}>نشطة ومفعلة</option>
-                                    <option value="0" ${g.enabled === 0 ? 'selected' : ''}>معطلة ومخفية</option>
-                                </select>
-                            </td>
-                            <td><button class="btn" style="padding:4px 8px; font-size:12px;" onclick="deleteGame(${g.id})">🗑️ حذف نهائي</button></td>
+                            <td><strong style="color:#60a5fa;">${g.clicks || 0}</strong></td>
+                            <td><button class="btn" style="background:#dc2626; padding:5px;" onclick="deleteGame(${g.id})">حذف</button></td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>
-        </div>
-
-        <div class="section">
-            <h2>هـ. إدارة الأفكار والمحتوى المفيد</h2>
-            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
-                <select id="idea_type">
-                    <option value="نص">نص إرشادي</option>
-                    <option value="فيديو">رابط فيديو embedded</option>
-                    <option value="رابط">رابط خارجي مخصص</option>
-                    <option value="لعبة">لعبة HTML تكميلية</option>
-                </select>
-                <input type="text" id="idea_title" placeholder="عنوان الفكرة">
-                <input type="text" id="idea_content" placeholder="المحتوى النصي أو الرابط الإلكتروني">
-            </div>
-            <button class="btn" style="background:#8b5cf6;" onclick="addIdea()">💡 نشر الفكرة الجديدة</button>
-
-            <table class="grid-table" style="margin-top:15px;">
-                <thead><tr><th>النوع</th><th>العنوان</th><th>الإجراء</th></tr></thead>
-                <tbody>
-                    ${allIdeas.map(i => `
-                        <tr>
-                            <td>${i.type}</td>
-                            <td>${i.title}</td>
-                            <td><button class="btn" style="padding:4px 8px; font-size:12px;" onclick="deleteIdea(${i.id})">حذف</button></td>
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="section" style="border: 2px dashed #10b981;">
-            <h2>و. شحن محاولات المستخدمين الفوري</h2>
-            <div style="display:flex; gap:15px;">
-                <input type="text" id="target_id" placeholder="أدخل الـ ID الخاص بالمستخدم (9 أحرف وأرقام)" style="max-width:400px;">
-                <input type="number" id="charge_attempts" placeholder="عدد المحاولات الإضافية (مثال: 50)" style="max-width:200px;">
-                <button class="btn" style="background:#10b981;" onclick="chargeUser()">⚡ شحن الرصيد الآن</button>
-            </div>
         </div>
 
         <script>
             const authKey = "${auth}";
-
-            async function saveSettings() {
-                const settings = {
-                    site_title_ar: document.getElementById('site_title_ar').value,
-                    site_title_en: document.getElementById('site_title_en').value,
-                    logo_url: document.getElementById('logo_url').value,
-                    header_text: document.getElementById('header_text').value,
-                    footer_text: document.getElementById('footer_text').value,
-                    bg_color_1: document.getElementById('bg_color_1').value,
-                    bg_color_2: document.getElementById('bg_color_2').value,
-                    btn_color: document.getElementById('btn_color').value,
-                    text_color: document.getElementById('text_color').value,
-                    show_ideas: document.getElementById('show_ideas').value,
-                    limit_reached_msg: document.getElementById('limit_reached_msg').value,
-                    telegram_username: document.getElementById('telegram_username').value,
-                };
-
-                let res = await fetch('/api/admin/update-settings', {
+            async function chargeUser() {
+                const targetId = document.getElementById('targetId').value;
+                const attempts = document.getElementById('attemptsCount').value;
+                if(!targetId || !attempts) return alert("يرجى ملء جميع الحقول");
+                let res = await fetch('/api/admin/charge-user', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ password: authKey, settings })
+                    body: JSON.stringify({ password: authKey, targetId, attempts })
                 });
-                if(res.ok) alert("تم حفظ وتطبيق كافة الإعدادات والألوان فورياً! 🎉");
+                let data = await res.json();
+                if(data.success) { alert("تم شحن المحاولات بنجاح!"); location.reload(); }
             }
-
-            async function toggleGame(id, enabled) {
-                await fetch('/api/admin/game-status', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ password: authKey, id, enabled: parseInt(enabled) })
-                });
-            }
-
             async function deleteGame(id) {
-                if(confirm("هل أنت متأكد تماماً من حذف هذه اللعبة وإزالتها من السيرفر؟")) {
+                if(confirm("هل أنت متأكد من حذف اللعبة؟")) {
                     await fetch('/api/admin/delete-game', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
@@ -952,51 +619,10 @@ app.get('/admin', (req, res) => {
                     location.reload();
                 }
             }
-
-            async function addIdea() {
-                const type = document.getElementById('idea_type').value;
-                const title = document.getElementById('idea_title').value;
-                const content = document.getElementById('idea_content').value;
-
-                await fetch('/api/admin/add-idea', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ password: authKey, type, title, content })
-                });
-                location.reload();
-            }
-
-            async function deleteIdea(id) {
-                await fetch('/api/admin/delete-idea', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ password: authKey, id })
-                });
-                location.reload();
-            }
-
-            async function chargeUser() {
-                const targetId = document.getElementById('target_id').value;
-                const attempts = document.getElementById('charge_attempts').value;
-
-                let res = await fetch('/api/admin/charge-user', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ password: authKey, targetId, attempts })
-                });
-                let data = await res.json();
-                if(data.success) {
-                    alert("تم شحن الحساب بنجاح وتخصيص المحاولات المطلوبة للمستخدم! 🚀");
-                } else {
-                    alert("خطأ: " + data.msg);
-                }
-            }
         </script>
     </body>
     </html>
     `);
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 السيرفر يعمل بكفاءة كاملة على منفذ: ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 السيرفر يعمل بكفاءة كاملة`));
